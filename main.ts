@@ -183,20 +183,24 @@ function search(sub, useH, budget) {
     if (g !== gs[s]) continue; // stale entry: the state was re-opened cheaper
     const bs = bxs[s];
     if (solved(bs)) {
-      const path = [];
-      for (let t = s; t > 0; t = par[t]) path.push(t);
-      path.reverse();
-      let moves = '', player = sp, cur = sb.slice();
-      for (const t of path) {
-        const f = frm[t], tt = tto[t], d = tt - f;
-        for (const b of cur) occ[b] = 1;
-        moves += walkTo(w, wall, occ, player, f - d);
-        for (const b of cur) occ[b] = 0;
-        moves += DIRS.find(([dx, dy]) => dy * w + dx === d)[3];
-        player = f;
-        cur = cur.map(b => (b === f ? tt : b));
-      }
-      return {pushes: path.length, moves};
+      // Reconstruction walks the player between pushes; a throw here (walk
+      // unreachable) must fail this search, never crash the whole run.
+      try {
+        const path = [];
+        for (let t = s; t > 0; t = par[t]) path.push(t);
+        path.reverse();
+        let moves = '', player = sp, cur = sb.slice();
+        for (const t of path) {
+          const f = frm[t], tt = tto[t], d = tt - f;
+          for (const b of cur) occ[b] = 1;
+          moves += walkTo(w, wall, occ, player, f - d);
+          for (const b of cur) occ[b] = 0;
+          moves += DIRS.find(([dx, dy]) => dy * w + dx === d)[3];
+          player = f;
+          cur = cur.map(b => (b === f ? tt : b));
+        }
+        return {pushes: path.length, moves};
+      } catch { return null; }
     }
     if (expanded >= budget) return null;
     expanded++;
@@ -275,6 +279,10 @@ function endOf(w, from, moves) {
 
 function solveLevel(text) {
   const level = parse(text);
+  // Malformed levels (no player, boxes != goals, a goal on a wall square —
+  // incl. the border, which parse walls over) hang or crash the searches
+  // below; they are unsolvable by construction, so answer '' up front.
+  if (level.player < 0 || level.boxes.length !== level.goals.length || level.goals.some(g => level.wall[g])) return '';
   const rooms = roomsOf(level);
   if (rooms === null) {
     const r = search(level, true, WB) ?? search(level, false, WB);
@@ -290,7 +298,14 @@ function solveLevel(text) {
     }
     const sub = {w: level.w, h: level.h, wall, goals: room.goals.slice().sort((a, b) => a - b), boxes: room.boxes.slice().sort((a, b) => a - b), player};
     const r = search(sub, true, AB) ?? search(sub, false, BB);
-    if (!r) return '';
+    if (!r) {
+      // The room pass has no backtracking: a room solved first can seal the
+      // only way into a later room (e.g. its goal sits in its only doorway),
+      // so a room failure does not prove the level unsolvable. Fall back to
+      // the whole-level search — the same path used when roomsOf is null.
+      const whole = search(level, true, WB) ?? search(level, false, WB);
+      return whole ? whole.moves : '';
+    }
     moves += r.moves;
     player = endOf(level.w, player, r.moves);
     done.add(room);
